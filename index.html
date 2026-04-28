@@ -9,32 +9,223 @@
             --bg: #0a0a0a; --panel: #1a1a1a; --fg: #e0e0e0; --accent: #00ccff; 
             --ok: #00ff9d; --warn: #ffcc00; --err: #ff4444; 
         }
-        body, html { margin:0; padding:0; height:100%; font-family:'Courier New',monospace; background:var(--bg); color:var(--fg); overflow:hidden; }
+        body, html { 
+            margin:0; padding:0; height:100%; font-family:'Courier New',monospace; 
+            background:var(--bg); color:var(--fg); overflow:hidden; 
+        }
         #map { height:100vh; width:100vw; }
         #fab { 
-            position:absolute; bottom:25px; right:25px; width:65px; height:65px; 
+            position:absolute; bottom:30px; right:30px; width:70px; height:70px; 
             background:var(--accent); color:#000; border-radius:50%; display:flex; 
             align-items:center; justify-content:center; cursor:pointer; z-index:2000; 
-            box-shadow:0 4px 20px rgba(0,204,255,0.5); font-size:28px; 
+            font-size:32px; box-shadow:0 6px 25px rgba(0,204,255,0.6); 
         }
         #dash { 
-            position:absolute; top:20px; right:20px; width:470px; max-height:86vh; 
-            background:var(--panel); border:2px solid var(--accent); box-shadow:0 0 25px rgba(0,204,255,0.4); 
-            border-radius:6px; display:none; flex-direction:column; z-index:1999; overflow:hidden; 
+            position:absolute; top:20px; right:20px; width:470px; max-height:88vh; 
+            background:var(--panel); border:3px solid var(--accent); box-shadow:0 0 30px rgba(0,204,255,0.4); 
+            border-radius:8px; display:none; flex-direction:column; z-index:1999; overflow:hidden; 
         }
         .header { 
-            background:#000; padding:14px 18px; font-weight:bold; font-size:15px; 
+            background:#000; padding:16px 20px; font-weight:bold; font-size:16px; 
             display:flex; justify-content:space-between; align-items:center; 
         }
         .content { padding:16px; overflow-y:auto; flex:1; }
         .group-card { 
             background:#222; border-left:6px solid var(--accent); margin-bottom:16px; 
-            padding:14px; border-radius:4px; 
+            padding:14px; border-radius:6px; 
         }
-        .group-title { font-weight:bold; margin-bottom:8px; display:flex; justify-content:space-between; font-size:14px; }
-        .meta { font-size:11.5px; color:#aaa; margin-bottom:8px; }
+        .group-title { 
+            font-weight:bold; margin-bottom:8px; display:flex; justify-content:space-between; font-size:14px; 
+        }
+        .meta { font-size:12px; color:#aaa; margin-bottom:10px; }
         .btn-row { display:flex; gap:6px; flex-wrap:wrap; }
         button { 
+            padding:9px 13px; font-size:11px; font-weight:bold; text-transform:uppercase; 
+            background:#333; color:var(--fg); border:1px solid #555; cursor:pointer; 
+            border-radius:4px; 
+        }
+        button:hover { background:#444; }
+        button.active { background:var(--accent); color:#000; }
+        button.danger { background:#440000; border-color:#ff4444; }
+        button.link { background:#444; padding:8px 12px; }
+        textarea { 
+            width:100%; height:120px; margin-top:10px; background:#111; color:#0f0; 
+            border:1px solid #666; font-size:10px; display:none; padding:10px; resize:vertical; 
+        }
+        #toast-container { 
+            position:absolute; top:20px; right:20px; z-index:3000; 
+            display:flex; flex-direction:column; gap:8px; 
+        }
+        .toast { 
+            background:#1a1a1a; border-left:5px solid var(--accent); color:white; 
+            padding:14px 18px; border-radius:6px; box-shadow:0 5px 15px rgba(0,0,0,0.6); 
+            min-width:280px; display:flex; align-items:center; gap:12px; font-size:13px; 
+        }
+        .toast.success { border-left-color:var(--ok); }
+        .toast.error { border-left-color:var(--err); }
+    </style>
+</head>
+<body>
+
+<div id="fab" onclick="toggleDash()">🛰️</div>
+
+<div id="dash">
+    <div class="header">
+        SATCOM V10.0 
+        <span onclick="toggleDash()" style="cursor:pointer;font-size:22px">×</span>
+    </div>
+    <div class="content" id="controls"></div>
+</div>
+
+<div id="toast-container"></div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/satellite.js/4.0.0/satellite.min.js"></script>
+
+<script>
+    const GROUPS = {
+        "ISS":      { slug: "stations",   color: "#ff3333" },
+        "NAVIC":    { slug: "irnss",      color: "#33ff77" },
+        "STARLINK": { slug: "starlink",   color: "#3399ff" },
+        "GPS":      { slug: "gps-ops",    color: "#ffaa00" },
+        "ONEWEB":   { slug: "oneweb",     color: "#ff66cc" },
+        "IRIDIUM":  { slug: "iridium",    color: "#aa88ff" }
+    };
+
+    let satVault = JSON.parse(localStorage.getItem('sat_v10')) || {};
+    let enabled = JSON.parse(localStorage.getItem('sat_v10_enabled')) || {};
+    let markers = {}, pastTracks = {}, futurePaths = {}, lineToObserver = null;
+    let map, currentFilter = '';
+
+    const OBSERVER = L.latLng(23.5, 88.0);
+
+    map = L.map('map', { zoomControl: true, attributionControl: false }).setView([23.5, 88], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    function hoursSince(ts) { return ts ? ((Date.now() - ts) / 3600000) : 999; }
+
+    function formatTimeAgo(ts) {
+        if (!ts) return "Never";
+        const mins = Math.floor((Date.now() - ts) / 60000);
+        if (mins < 60) return `${mins} min ago`;
+        const h = Math.floor(mins / 60);
+        return `${h}h ${mins % 60}min ago`;
+    }
+
+    function getColor(hours) {
+        if (hours < 6) return '#00ff9d';
+        if (hours < 48) return '#ffcc00';
+        return '#ff4444';
+    }
+
+    function saveVault() {
+        localStorage.setItem('sat_v10', JSON.stringify(satVault));
+    }
+
+    function showToast(msg, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `<span>${type==='success'?'✅':type==='error'?'❌':'ℹ️'}</span><span>${msg}</span>`;
+        document.getElementById('toast-container').appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+    }
+
+    function openAndPaste(key) {
+        window.open(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${GROUPS[key].slug}&FORMAT=tle`, '_blank');
+        const ta = document.getElementById(`area-${key}`);
+        ta.style.display = 'block';
+        ta.focus();
+    }
+
+    function manualPaste(key) {
+        const ta = document.getElementById(`area-${key}`);
+        const text = ta.value.trim();
+        if (text.length < 100) {
+            showToast("TLE data too short", 'error');
+            return;
+        }
+        satVault[key] = { tles: text, ts: Date.now() };
+        saveVault();
+        showToast(`${key} TLE saved`, 'success');
+        ta.style.display = 'none';
+        render();
+    }
+
+    function deleteGroup(key) {
+        if (confirm(`Delete all ${key} data from storage?`)) {
+            delete satVault[key];
+            delete enabled[key];
+            clearGroup(key);
+            saveVault();
+            localStorage.setItem('sat_v10_enabled', JSON.stringify(enabled));
+            render();
+            showToast(`${key} data deleted`, 'success');
+        }
+    }
+
+    function render() {
+        const con = document.getElementById('controls');
+        con.innerHTML = '';
+
+        Object.keys(GROUPS).forEach(key => {
+            const data = satVault[key];
+            const hours = hoursSince(data ? data.ts : null);
+            const timeAgo = formatTimeAgo(data ? data.ts : null);
+            const errKm = data ? Math.max(1, (1 + 1.8 * (hours/24)**1.5)).toFixed(0) : '?';
+            const color = getColor(hours);
+
+            con.innerHTML += `
+                <div class="group-card" style="border-left-color:${GROUPS[key].color}">
+                    <div class="group-title">
+                        ${key} <span style="color:${color}">Err: ${errKm} km</span>
+                    </div>
+                    <div class="meta" style="color:${color}">Last updated: ${timeAgo}</div>
+                    <div class="btn-row">
+                        <button onclick="fetchUpdate('${key}', true)">FETCH</button>
+                        <button class="link" onclick="openAndPaste('${key}')">→</button>
+                        <button class="danger" onclick="deleteGroup('${key}')">DEL</button>
+                        <button class="${enabled[key]?'active':''}" onclick="toggleVis('${key}')">${enabled[key]?'HIDE':'SHOW'}</button>
+                    </div>
+                    <textarea id="area-${key}" placeholder="Paste TLE data here..." onblur="manualPaste('${key}')"></textarea>
+                </div>`;
+        });
+    }
+
+    function toggleVis(key) {
+        enabled[key] = !enabled[key];
+        localStorage.setItem('sat_v10_enabled', JSON.stringify(enabled));
+        if (!enabled[key]) clearGroup(key);
+        render();
+    }
+
+    function clearGroup(key) {
+        if (markers[key]) Object.values(markers[key]).forEach(m => map.removeLayer(m));
+        if (pastTracks[key]) Object.values(pastTracks[key]).forEach(l => map.removeLayer(l));
+        if (futurePaths[key]) Object.values(futurePaths[key]).forEach(l => map.removeLayer(l));
+        delete markers[key]; delete pastTracks[key]; delete futurePaths[key];
+    }
+
+    function toggleDash() {
+        const d = document.getElementById('dash');
+        d.style.display = (d.style.display === 'flex') ? 'none' : 'flex';
+    }
+
+    function loop() {
+        requestAnimationFrame(loop);
+    }
+
+    // Initialize
+    render();
+    loop();
+
+    // Open dialog automatically on load
+    setTimeout(() => {
+        document.getElementById('dash').style.display = 'flex';
+    }, 500);
+</script>
+</body>
+</html>        button { 
             padding:8px 12px; font-size:11px; font-weight:bold; text-transform:uppercase; 
             background:#333; color:var(--fg); border:1px solid #555; cursor:pointer; 
             border-radius:3px; 
