@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SATCOM // V11</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+        :root {
+            --bg: #070a0f;
+            --panel: #0d1117;
+            --panel2: #111820;
+            --border: #1e3a4a;
+            --fg: #c9d8e8;
+            --fg-dim: #5a7a8a;
+            --accent: #00d4ff;
+            --accent2: #0088bb;
+            --ok: #00ff9d;
+            --warn: #ffd600;
+            --err: #ff4455;
+            --iss: #ff4455;
+            --navic: #00ff9d;
+            --starlink: #00d4ff;
+            --gps: #ffd600;
+            --oneweb: #ff6dff;
+            --iridium: #ff8c42;
+        }
+
+        * { box-sizing: border-box; }
+        body, html { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: 'Share Tech Mono', monospace; overflow: hidden; }
+
+        /* ── MAP ── */
+        #map { height: 100vh; width: 100vw; }
+        .leaflet-tile { filter: saturate(0.15) brightness(0.55) hue-rotate(180deg); }
+
+        /* ── FAB ── */
+        #fab {
+            position: absolute; bottom: 28px; right: 28px; width: 64px; height: 64px;
+            background: var(--accent); color: #000; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; z-index: 2000; font-size: 28px;
+            box-shadow: 0 0 0 4px rgba(0,212,255,0.15), 0 0 30px rgba(0,212,255,0.5);
+            transition: box-shadow 0.3s, transform 0.2s;
+            animation: pulse-ring 3s ease-in-out infinite;
+        }
+        #fab:hover { transform: scale(1.08); box-shadow: 0 0 0 6px rgba(0,212,255,0.25), 0 0 50px rgba(0,212,255,0.7); }
+        @keyframes pulse-ring {
+            0%, 100% { box-shadow: 0 0 0 4px rgba(0,212,255,0.15), 0 0 30px rgba(0,212,255,0.5); }
+            50% { box-shadow: 0 0 0 10px rgba(0,212,255,0.05), 0 0 50px rgba(0,212,255,0.3); }
+        }
+
+        /* ── PANEL ── */
+        #dash {
+            position: absolute; top: 16px; right: 16px;
+            width: min(420px, calc(100vw - 32px));
+            max-height: calc(100vh - 32px);
+            background: var(--panel);
+            border: 1px solid var(--border);
+            box-shadow: 0 0 40px rgba(0,0,0,0.8), inset 0 0 60px rgba(0,212,255,0.02);
+            border-radius: 4px;
+            display: none; flex-direction: column;
+            z-index: 1999;
+            overflow: hidden;
+        }
+
+        /* ── HEADER ── */
+        .hdr {
+            background: linear-gradient(135deg, #000 0%, #0a1520 100%);
+            padding: 14px 16px; display: flex; align-items: center; gap: 10px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .hdr-title { font-family: 'Orbitron', sans-serif; font-size: 13px; font-weight: 900; color: var(--accent); letter-spacing: 3px; flex: 1; }
+        .hdr-close { color: var(--fg-dim); cursor: pointer; font-size: 18px; line-height: 1; transition: color 0.2s; }
+        .hdr-close:hover { color: var(--err); }
+
+        /* ── STATUS BAR ── */
+        #status-bar {
+            padding: 6px 16px; background: #000;
+            font-size: 9px; color: var(--fg-dim);
+            display: flex; justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0; letter-spacing: 1px;
+        }
+        #status-bar span { transition: color 0.5s; }
+        .status-ok { color: var(--ok) !important; }
+        .status-err { color: var(--err) !important; }
+        .status-warn { color: var(--warn) !important; }
+
+        /* ── PROGRESS ── */
+        .pbar-wrap { height: 2px; background: #000; flex-shrink: 0; }
+        #p-bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.4s; }
+
+        /* ── CONTENT ── */
+        .content { padding: 12px; overflow-y: auto; flex: 1; }
+        .content::-webkit-scrollbar { width: 4px; }
+        .content::-webkit-scrollbar-track { background: transparent; }
+        .content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        /* ── CARDS ── */
+        .group-card {
+            border: 1px solid var(--border);
+            border-left: 4px solid currentColor;
+            margin-bottom: 10px;
+            padding: 12px;
+            background: var(--panel2);
+            border-radius: 3px;
+            transition: border-color 0.3s, background 0.2s;
+        }
+        .group-card:hover { background: #151f2a; }
+
+        .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .card-name { font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+        .card-meta { font-size: 9px; color: var(--fg-dim); display: flex; gap: 10px; margin-bottom: 8px; }
+        .card-drift { font-size: 9px; font-weight: bold; }
+
+        /* ── BUTTONS ── */
+        .btn-row { display: flex; gap: 5px; flex-wrap: wrap; }
+        .btn {
+            padding: 6px 10px; font-size: 9px; font-family: 'Share Tech Mono', monospace;
+            background: #1a2535; color: var(--fg); border: 1px solid var(--border);
+            cursor: pointer; border-radius: 2px; letter-spacing: 1px;
+            transition: all 0.15s; white-space: nowrap;
+        }
+        .btn:hover { background: #223040; border-color: var(--accent); color: var(--accent); }
+        .btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
+        .btn.fetching { border-style: dashed; color: var(--warn); border-color: var(--warn); animation: blink 0.7s step-end infinite; }
+        .btn.ok { background: rgba(0,255,157,0.15); color: var(--ok); border-color: var(--ok); }
+        .btn.fail { background: rgba(255,68,85,0.15); color: var(--err); border-color: var(--err); }
+        .btn.del { background: rgba(255,68,85,0.1); color: var(--err); border-color: #4a1a1a; }
+        .btn.del:hover { background: rgba(255,68,85,0.3); border-color: var(--err); color: var(--err); }
+        @keyframes blink { 50% { opacity: 0.4; } }
+
+        /* ── TEXTAREA ── */
+        .tle-area {
+            display: none; width: 100%; height: 90px; margin-top: 8px;
+            background: #000; color: var(--ok); border: 1px solid var(--border);
+            border-radius: 2px; padding: 8px; font-family: 'Share Tech Mono', monospace;
+            font-size: 9px; resize: vertical;
+        }
+        .tle-area:focus { outline: none; border-color: var(--accent); }
+        .tle-hint { font-size: 9px; color: var(--fg-dim); margin-top: 4px; display: none; line-height: 1.5; }
+
+        /* ── SATELLITE COUNT ── */
+        .sat-count { font-size: 9px; color: var(--fg-dim); margin-top: 4px; }
+        .sat-count span { font-weight: bold; }
+
+        /* ── FOOTER ── */
+        .footer {
+            padding: 8px 12px; border-top: 1px solid var(--border);
+            font-size: 9px; color: var(--fg-dim);
+            display: flex; justify-content: space-between;
+            flex-shrink: 0; background: #000;
+        }
+        .footer-clock { color: var(--accent); font-family: 'Orbitron', sans-serif; font-size: 10px; }
+
+        /* ── MAP LABELS ── */
+        .sat-label {
+            background: rgba(0,0,0,0.85) !important;
+            border: 1px solid rgba(255,255,255,0.2) !important;
+            color: #fff !important;
+            font-family: 'Share Tech Mono', monospace !important;
+            font-size: 9px !important;
+            padding: 2px 5px !important;
+            border-radius: 2px !important;
+            white-space: nowrap;
+        }
+
+        /* ── HUD ── */
+        #hud {
+            position: absolute; bottom: 28px; left: 16px;
+            font-family: 'Orbitron', monospace; font-size: 10px;
+            color: var(--accent); letter-spacing: 2px;
+            background: rgba(0,0,0,0.6); padding: 8px 14px;
+            border: 1px solid var(--border); border-radius: 3px;
+            z-index: 1000; pointer-events: none;
+        }
+        #hud-sats { font-size: 18px; font-weight: 900; }
+
+        /* ── SCAN LINE OVERLAY ── */
+        body::after {
+            content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+            pointer-events: none; z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+
+<div id="hud">
+    <div style="font-size:9px;color:var(--fg-dim);margin-bottom:2px">ACTIVE SATELLITES</div>
+    <div id="hud-sats">0</div>
+</div>
+
+<div id="fab" onclick="toggleDash()" title="Open Mission Control">🛰️</div>
+
+<div id="dash">
+    <div class="hdr">
+        <div class="hdr-title">SATCOM V11</div>
+        <span class="hdr-close" onclick="toggleDash()">✕</span>
+    </div>
+    <div id="status-bar">
+        <span id="s-fetch">READY</span>
+        <span id="s-time">UTC --:--:--</span>
+        <span id="s-sats">0 SAT TRACKED</span>
+    </div>
+    <div class="pbar-wrap"><div id="p-bar"></div></div>
+    <div class="content" id="controls"></div>
+    <div class="footer">
+        <span>TLE SRC: CELESTRAK.ORG</span>
+        <span class="footer-clock" id="f-clock">--:--:--</span>
+    </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/satellite.js/4.0.0/satellite.min.js"></script>
+<script>
+// ─── CONFIG ─────────────────────────────────────────────────────────────────
+const GROUPS = {
+    "ISS":     { slug: "stations",  color: "#ff4455", cssVar: "--iss" },
+    "NAVIC":   { slug: "irnss",     color: "#00ff9d", cssVar: "--navic" },
+    "STARLINK":{ slug: "starlink",  color: "#00d4ff", cssVar: "--starlink" },
+    "GPS":     { slug: "gps-ops",   color: "#ffd600", cssVar: "--gps" },
+    "ONEWEB":  { slug: "oneweb",    color: "#ff6dff", cssVar: "--oneweb" },
+    "IRIDIUM": { slug: "iridium",   color: "#ff8c42", cssVar: "--iridium" }
+};
+
+const CORS_PROXIES = [
+    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    url => `https://thingproxy.freeboard.io/fetch/${url}`
+];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let satVault  = {};
+let enabled   = {};
+let markers   = {};
+let orbitLines = {};
+let totalVisible = 0;
+
+try { satVault = JSON.parse(localStorage.getItem('sat_v11')) || {}; } catch(e){}
+try { enabled  = JSON.parse(localStorage.getItem('sat_v11_enabled')) || {}; } catch(e){}
+
+// ─── MAP ─────────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([23.5, 82], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+// ─── FETCH WITH PROXY FALLBACK ───────────────────────────────────────────────
+async function fetchWithFallback(key) {
+    const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${GROUPS[key].slug}&FORMAT=tle`;
+    for (let i = 0; i < CORS_PROXIES.length; i++) {
+        try {
+            const res = await fetch(CORS_PROXIES[i](url), { signal: AbortSignal.timeout(10000) });
+            if (!res.ok) continue;
+            const text = await res.text();
+            if (text.length > 100 && text.includes('1 ')) return text; // valid TLE check
+        } catch(e) { continue; }
+    }
+    return null;
+}
+
+// ─── FETCH UPDATE ─────────────────────────────────────────────────────────────
+async function fetchUpdate(key) {
+    const btn = document.getElementById(`fbtn-${key}`);
+    const pBar = document.getElementById('p-bar');
+    setStatus('fetch', `FETCHING ${key}...`, 'warn');
+    btn.className = 'btn fetching';
+    btn.textContent = 'WAIT';
+    pBar.style.width = '35%';
+
+    const text = await fetchWithFallback(key);
+    pBar.style.width = '85%';
+
+    if (text) {
+        saveData(key, text);
+        pBar.style.width = '100%';
+        btn.className = 'btn ok';
+        btn.textContent = '✓ OK';
+        setStatus('fetch', `${key} UPDATED`, 'ok');
+        setTimeout(() => { pBar.style.width = '0%'; render(); }, 1200);
+    } else {
+        pBar.style.width = '0%';
+        btn.className = 'btn fail';
+        btn.textContent = 'FAIL';
+        setStatus('fetch', `FETCH FAILED — USE PASTE`, 'err');
+        const ta = document.getElementById(`ta-${key}`);
+        const hint = document.getElementById(`hint-${key}`);
+        if (ta) { ta.style.display = 'block'; }
+        if (hint) { hint.style.display = 'block'; }
+        setTimeout(() => render(), 3000);
+    }
+}
+
+function saveData(key, text) {
+    satVault[key] = { tles: text, ts: Date.now() };
+    try { localStorage.setItem('sat_v11', JSON.stringify(satVault)); } catch(e){}
+}
+
+function savePaste(key) {
+    const ta = document.getElementById(`ta-${key}`);
+    if (!ta) return;
+    const text = ta.value.trim();
+    if (text.length > 60) {
+        saveData(key, text);
+        setStatus('fetch', `${key} LOADED FROM PASTE`, 'ok');
+        render();
+    }
+}
+
+function toggleVis(key) {
+    enabled[key] = !enabled[key];
+    try { localStorage.setItem('sat_v11_enabled', JSON.stringify(enabled)); } catch(e){}
+    if (!enabled[key]) clearMarkers(key);
+    render();
+}
+
+function deleteGroup(key) {
+    if (!confirm(`Delete all TLE data for ${key}?`)) return;
+    delete satVault[key];
+    delete enabled[key];
+    clearMarkers(key);
+    try {
+        localStorage.setItem('sat_v11', JSON.stringify(satVault));
+        localStorage.setItem('sat_v11_enabled', JSON.stringify(enabled));
+    } catch(e){}
+    render();
+}
+
+function clearMarkers(key) {
+    Object.values(markers[key] || {}).forEach(m => map.removeLayer(m));
+    delete markers[key];
+    Object.values(orbitLines[key] || {}).forEach(l => map.removeLayer(l));
+    delete orbitLines[key];
+}
+
+function openCelestrak(key) {
+    window.open(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${GROUPS[key].slug}&FORMAT=tle`, '_blank');
+    const ta = document.getElementById(`ta-${key}`);
+    const hint = document.getElementById(`hint-${key}`);
+    if (ta) ta.style.display = 'block';
+    if (hint) hint.style.display = 'block';
+}
+
+// ─── RENDER PANEL ────────────────────────────────────────────────────────────
+function render() {
+    const con = document.getElementById('controls');
+    let html = '';
+
+    Object.keys(GROUPS).forEach(key => {
+        const g = GROUPS[key];
+        const data = satVault[key];
+        const hoursAgo = data ? (Date.now() - data.ts) / 3600000 : null;
+        const daysAgo = hoursAgo !== null ? hoursAgo / 24 : null;
+        // Drift estimation: TLE accuracy degrades ~1km/day for LEO, less for MEO/GEO
+        const driftKm = daysAgo !== null ? (daysAgo * 2.5).toFixed(1) : '??';
+        const driftColor = daysAgo === null ? '#666' : daysAgo < 1 ? 'var(--ok)' : daysAgo < 3 ? 'var(--warn)' : 'var(--err)';
+        const satCount = data ? countSats(data.tles) : 0;
+        const timeLabel = hoursAgo === null ? 'NEVER' : hoursAgo < 1 ? `${Math.floor(hoursAgo*60)}m AGO` : hoursAgo < 48 ? `${Math.floor(hoursAgo)}h AGO` : `${Math.floor(daysAgo)}d AGO`;
+
+        html += `
+        <div class="group-card" style="color:${g.color}; border-left-color:${g.color}">
+            <div class="card-top">
+                <div class="card-name">${key}</div>
+                <div class="card-drift" style="color:${driftColor}">±${driftKm}KM</div>
+            </div>
+            <div class="card-meta">
+                <span>UPDATED: ${timeLabel}</span>
+                ${satCount ? `<span style="color:${g.color}">${satCount} OBJECTS</span>` : ''}
+            </div>
+            <div class="btn-row">
+                <button class="btn fetch" id="fbtn-${key}" onclick="fetchUpdate('${key}')">⬇ FETCH</button>
+                <button class="btn" onclick="openCelestrak('${key}')" title="Open Celestrak in new tab">↗ CELESTRAK</button>
+                <button class="btn ${enabled[key] ? 'active' : ''}" onclick="toggleVis('${key}')">${enabled[key] ? '● HIDE' : '○ SHOW'}</button>
+                <button class="btn del" onclick="deleteGroup('${key}')">✕</button>
+            </div>
+            <textarea class="tle-area" id="ta-${key}" placeholder="Paste raw TLE data here..." onblur="savePaste('${key}')"></textarea>
+            <div class="tle-hint" id="hint-${key}">
+                1. Open Celestrak above → Select All → Copy<br>
+                2. Paste into this box, then click outside
+            </div>
+        </div>`;
+    });
+
+    con.innerHTML = html;
+    updateHUD();
+}
+
+function countSats(tleText) {
+    if (!tleText) return 0;
+    const lines = tleText.split('\n').filter(l => l.trim());
+    return Math.floor(lines.length / 3);
+}
+
+// ─── STATUS ──────────────────────────────────────────────────────────────────
+function setStatus(field, msg, level) {
+    const el = document.getElementById('s-fetch');
+    if (el) {
+        el.textContent = msg;
+        el.className = level === 'ok' ? 'status-ok' : level === 'err' ? 'status-err' : level === 'warn' ? 'status-warn' : '';
+    }
+}
+
+function updateHUD() {
+    let total = 0;
+    Object.keys(enabled).forEach(k => { if (enabled[k] && markers[k]) total += Object.keys(markers[k]).length; });
+    totalVisible = total;
+    const el = document.getElementById('hud-sats');
+    if (el) el.textContent = total.toLocaleString();
+    const ss = document.getElementById('s-sats');
+    if (ss) ss.textContent = `${total} SAT TRACKED`;
+}
+
+// ─── PROPAGATION LOOP ────────────────────────────────────────────────────────
+let lastLoopTime = 0;
+const LOOP_INTERVAL = 5000; // update positions every 5 seconds
+
+function loop(timestamp) {
+    if (timestamp - lastLoopTime > LOOP_INTERVAL) {
+        lastLoopTime = timestamp;
+        propagateAll();
+    }
+    // Update clock every frame
+    const now = new Date();
+    const utc = now.toUTCString().slice(17, 25);
+    const tEl = document.getElementById('s-time');
+    const fEl = document.getElementById('f-clock');
+    if (tEl) tEl.textContent = `UTC ${utc}`;
+    if (fEl) fEl.textContent = utc;
+
+    requestAnimationFrame(loop);
+}
+
+function propagateAll() {
+    const now = new Date();
+    const gst = satellite.gstime(now);
+
+    Object.keys(GROUPS).forEach(key => {
+        if (!enabled[key] || !satVault[key]) return;
+        if (!markers[key]) markers[key] = {};
+
+        const lines = satVault[key].tles.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        const color = GROUPS[key].color;
+
+        for (let i = 0; i + 2 < lines.length; i += 3) {
+            const name = lines[i].replace(/^0 /, '').trim();
+            const l1 = lines[i + 1], l2 = lines[i + 2];
+            if (!l1.startsWith('1') || !l2.startsWith('2')) continue;
+
+            try {
+                const satrec = satellite.twoline2satrec(l1, l2);
+                const pv = satellite.propagate(satrec, now);
+                if (!pv.position) continue;
+                const geo = satellite.eciToGeodetic(pv.position, gst);
+                const lat = satellite.degreesLat(geo.latitude);
+                const lng = satellite.degreesLong(geo.longitude);
+                if (isNaN(lat) || isNaN(lng)) continue;
+
+                const pos = [lat, lng];
+
+                if (!markers[key][name]) {
+                    const m = L.circleMarker(pos, {
+                        radius: key === 'ISS' ? 6 : 3,
+                        color: color,
+                        fillColor: color,
+                        fillOpacity: 0.9,
+                        weight: key === 'ISS' ? 2 : 1,
+                        opacity: 0.9
+                    }).addTo(map);
+                    if (key === 'ISS' || lines.length <= 9) { // show labels for small groups or ISS
+                        m.bindTooltip(name, { className: 'sat-label', permanent: false, direction: 'top', offset: [0, -4] });
+                    }
+                    markers[key][name] = m;
+                } else {
+                    markers[key][name].setLatLng(pos);
+                }
+            } catch(e) { /* skip bad TLE */ }
+        }
+    });
+    updateHUD();
+}
+
+// ─── UI TOGGLE ───────────────────────────────────────────────────────────────
+function toggleDash() {
+    const d = document.getElementById('dash');
+    d.style.display = (d.style.display === 'flex') ? 'none' : 'flex';
+}
+
+// ─── BOOT ────────────────────────────────────────────────────────────────────
+render();
+toggleDash();
+requestAnimationFrame(loop);
+propagateAll(); // immediate first pass
+</script>
+</body>
+</html>
