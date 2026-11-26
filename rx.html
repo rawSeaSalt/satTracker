@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<body>
+  <button id="start">Start God's Eye</button>
+  <button id="stop" disabled>Stop</button>
+  <div id="status">Idle</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
+  <script>
+    const STATIONS = [
+      { name: "Delhi",   lat: 28.61, lon: 77.21, pan: -0.6 },
+      { name: "Mumbai",  lat: 19.08, lon: 72.88, pan: -0.2 },
+      { name: "Kolkata", lat: 22.57, lon: 88.36, pan:  0.2 },
+      { name: "Leh",     lat: 34.15, lon: 77.58, pan:  0.6 }
+    ];
+
+    const map = (v, a, b, c, d) =>
+      c + (Math.min(Math.max(v, a), b) - a) * (d - c) / (b - a);
+
+    const nodes = [];
+    let pollTimer = null;
+    let running = false;
+
+    async function fetchWeather(lat, lon) {
+      const url =
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+        "&current=temperature_2m,wind_speed_10m,precipitation,snowfall,cloud_cover,is_day,weather_code";
+      const res = await fetch(url);
+      return (await res.json()).current;
+    }
+
+    async function buildStation(station) {
+      const panner = new Tone.Panner(station.pan);
+      const reverb = new Tone.Reverb({ decay: 2, wet: 0.3 });
+      await reverb.generate();
+
+      const filter = new Tone.Filter(1200, "lowpass");
+      const synth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.25, decay: 0.4, sustain: 0.5, release: 1.4 }
+      });
+
+      // Snow -> delicate high crystalline shimmer
+      const snowFilter = new Tone.Filter(3500, "bandpass", 4);
+      const snowGain = new Tone.Gain(0);
+      const snowNoise = new Tone.Noise("white");
+
+      // Rain -> filtered pink noise bed (no duplicate dry/wet double-bus)
+      const rainFilter = new Tone.Filter(1400, "lowpass");
+      const rainGain = new Tone.Gain(0);
+      const rainNoise = new Tone.Noise("pink");
+
+      synth.chain(filter, reverb, panner, Tone.Destination);
+      rainNoise.chain(rainFilter, rainGain, reverb);
+      snowNoise.chain(snowFilter, snowGain, reverb);
+
+      rainNoise.start();
+      snowNoise.start();
+
+      const state = {
+        station,
+        chord: [48, 52, 55],
+        filter,
+        reverb,
+        rainGain,
+        snowGain,
+        loop: null
+      };
+
+      state.loop = new Tone.Loop(time => {
+        const notes = state.chord.map(n => Tone.Frequency(n, "midi"));
+        synth.triggerAttackRelease(notes, "2n", time);
+      }, "2n").start(0);
+
+      nodes.push(state);
+      return state;
+    }
+
+    async function updateStation(state) {
+      const c = await fetchWeather(state.station.lat, state.station.lon);
+
+      state.reverb.decay = map(c.cloud_cover, 0, 100, 1, 8);
+      state.reverb.wet.rampTo(map(c.cloud_cover, 0, 100, 0.1, 0.7), 1.5);
+
+      state.filter.frequency.rampTo(map(c.wind_speed_10m, 0, 40, 350, 7500), 1.5);
+      state.rainGain.gain.rampTo(Math.min(c.precipitation * 0.25, 0.35), 1.5);
+      state.snowGain.gain.rampTo(Math.min(c.snowfall * 0.2, 0.22), 1.5);
+
+      const root = Math.round(map(c.temperature_2m, -10, 45, 36, 72));
+      state.chord = c.weather_code >= 95 ? [root, root + 6] : [root, root + 4, root + 7];
+
+      return `${state.station.name}: ${c.temperature_2m}°C | wind ${c.wind_speed_10m} | rain ${c.precipitation} | snow ${c.snowfall}`;
+    }
+
+    async function refreshAll() {
+      const lines = await Promise.all(nodes.map(updateStation));
+      const avgDay = nodes.length > 0;
+      if (avgDay) {
+        Tone.Transport.bpm.rampTo(72, 2);
+      }
+      document.getElementById("status").textContent = lines.join("  ||  ");
+    }
+
+    document.getElementById("start").onclick = async () => {
+      if (running) return;
+      running = true;
+      document.getElementById("start").disabled = true;
+      document.getElementById("stop").disabled = false;
+      document.getElementById("status").textContent = "Initializing audio & telemetry...";
+
+      await Tone.start();
+      if (nodes.length === 0) {
+        for (const st of STATIONS) {
+          await buildStation(st);
+        }
+      }
+
+      await refreshAll();
+      Tone.Transport.start();
+
+      pollTimer = setInterval(refreshAll, 5 * 60 * 1000);
+    };
+
+    document.getElementById("stop").onclick = () => {
+      running = false;
+      clearInterval(pollTimer);
+      pollTimer = null;
+      Tone.Transport.stop();
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+      document.getElementById("status").textContent = "Stopped";
+    };
+  </script>
+</body>
+</html>
